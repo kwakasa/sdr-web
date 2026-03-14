@@ -10,11 +10,12 @@ use super::protocol::ControlMessage;
 
 /// Run the WebSocket server, accepting client connections.
 ///
-/// Each connected client receives FFT data frames via the broadcast channel
-/// and can send JSON control messages back through the mpsc channel.
+/// Each connected client receives FFT and audio data frames via broadcast
+/// channels and can send JSON control messages back through the mpsc channel.
 pub async fn run_websocket_server(
     addr: SocketAddr,
     fft_tx: broadcast::Sender<Vec<u8>>,
+    audio_tx: broadcast::Sender<Vec<u8>>,
     cmd_tx: mpsc::Sender<ControlMessage>,
 ) {
     let listener = TcpListener::bind(addr)
@@ -43,9 +44,12 @@ pub async fn run_websocket_server(
         info!("WebSocket client connected: {}", peer_addr);
 
         let fft_rx = fft_tx.subscribe();
+        let audio_rx = audio_tx.subscribe();
         let cmd_tx = cmd_tx.clone();
 
-        tokio::spawn(handle_client(ws_stream, peer_addr, fft_rx, cmd_tx));
+        tokio::spawn(handle_client(
+            ws_stream, peer_addr, fft_rx, audio_rx, cmd_tx,
+        ));
     }
 }
 
@@ -53,23 +57,41 @@ async fn handle_client(
     ws_stream: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
     peer_addr: SocketAddr,
     mut fft_rx: broadcast::Receiver<Vec<u8>>,
+    mut audio_rx: broadcast::Receiver<Vec<u8>>,
     cmd_tx: mpsc::Sender<ControlMessage>,
 ) {
     let (mut ws_sender, mut ws_receiver) = ws_stream.split();
 
-    // Task: forward FFT data to this client
+    // Task: forward FFT and audio data to this client
     let send_task = tokio::spawn(async move {
         loop {
-            match fft_rx.recv().await {
-                Ok(frame) => {
-                    if ws_sender.send(Message::Binary(frame)).await.is_err() {
-                        break;
+            tokio::select! {
+                result = fft_rx.recv() => {
+                    match result {
+                        Ok(frame) => {
+                            if ws_sender.send(Message::Binary(frame)).await.is_err() {
+                                break;
+                            }
+                        }
+                        Err(broadcast::error::RecvError::Lagged(n)) => {
+                            warn!("client {} lagged, skipped {} FFT frames", peer_addr, n);
+                        }
+                        Err(broadcast::error::RecvError::Closed) => break,
                     }
                 }
-                Err(broadcast::error::RecvError::Lagged(n)) => {
-                    warn!("client {} lagged, skipped {} frames", peer_addr, n);
+                result = audio_rx.recv() => {
+                    match result {
+                        Ok(frame) => {
+                            if ws_sender.send(Message::Binary(frame)).await.is_err() {
+                                break;
+                            }
+                        }
+                        Err(broadcast::error::RecvError::Lagged(n)) => {
+                            warn!("client {} lagged, skipped {} audio frames", peer_addr, n);
+                        }
+                        Err(broadcast::error::RecvError::Closed) => break,
+                    }
                 }
-                Err(broadcast::error::RecvError::Closed) => break,
             }
         }
     });

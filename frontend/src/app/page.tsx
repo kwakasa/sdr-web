@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSDRConnection } from "@/hooks/useSDRConnection";
 import { useAudioPlayback } from "@/hooks/useAudioPlayback";
 import { useSpectrumData } from "@/hooks/useSpectrumData";
@@ -10,9 +10,24 @@ import { DEFAULT_FREQUENCY, DEFAULT_SAMPLE_RATE } from "@/lib/constants";
 
 const SPECTRUM_HEIGHT = 320;
 
+function getAudioStatusText(playing: boolean, bufferHealth: number): string {
+  if (!playing) return "Stopped";
+  if (bufferHealth < 0.02) return "Buffering...";
+  return "Playing";
+}
+
 export default function Home() {
-  const { connected, fftData, status, sendCommand } = useSDRConnection();
-  const { playing, togglePlayback } = useAudioPlayback();
+  const { playing, bufferHealth, togglePlayback, feedAudio } =
+    useAudioPlayback();
+
+  const connectionOptions = useMemo(
+    () => ({ onAudioData: feedAudio }),
+    [feedAudio]
+  );
+
+  const { connected, fftData, status, sendCommand } =
+    useSDRConnection(connectionOptions);
+
   const smoothedData = useSpectrumData(fftData);
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -40,6 +55,8 @@ export default function Home() {
     [sendCommand, frequency]
   );
 
+  const audioStatusText = getAudioStatusText(playing, bufferHealth);
+
   return (
     <div className="flex min-h-screen flex-col">
       <header className="flex items-center justify-between border-b border-gray-800 px-6 py-3">
@@ -50,6 +67,8 @@ export default function Home() {
           connected={connected}
           frequency={frequency}
           sampleRate={sampleRate}
+          audioPlaying={playing}
+          bufferHealth={bufferHealth}
         />
       </header>
 
@@ -86,17 +105,40 @@ export default function Home() {
           </button>
         </div>
 
-        <div className="flex justify-center">
+        <div className="flex items-center justify-center gap-4">
           <button
             onClick={togglePlayback}
             className={`rounded px-6 py-2 text-sm font-medium ${
               playing
                 ? "bg-red-600 text-white hover:bg-red-700"
-                : "bg-cyan-600 text-white hover:bg-cyan-700"
+                : "bg-green-600 text-white hover:bg-green-700"
             }`}
           >
-            {playing ? "Stop" : "Play"} (Phase 2)
+            {playing ? "Stop" : "Play"}
           </button>
+
+          <span className="text-sm text-gray-400">
+            Audio: {audioStatusText}
+          </span>
+
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-gray-500">Buffer</span>
+            <div className="h-2 w-16 overflow-hidden rounded-full bg-gray-800">
+              <div
+                className={`h-full transition-all ${
+                  bufferHealth > 0.3
+                    ? "bg-green-500"
+                    : bufferHealth > 0.1
+                      ? "bg-yellow-500"
+                      : "bg-red-500"
+                }`}
+                style={{ width: `${Math.round(bufferHealth * 100)}%` }}
+              />
+            </div>
+            <span className="text-xs font-mono text-gray-500">
+              {Math.round(bufferHealth * 100)}%
+            </span>
+          </div>
         </div>
       </main>
     </div>

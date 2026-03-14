@@ -74,12 +74,15 @@ async fn main() -> anyhow::Result<()> {
 
     // Create channels
     let (fft_tx, _) = broadcast::channel::<Vec<u8>>(64);
+    let (audio_tx, _) = broadcast::channel::<Vec<u8>>(64);
     let (cmd_tx, cmd_rx) = mpsc::channel::<ControlMessage>(32);
 
     let pipeline_config = PipelineConfig {
         fft_size: 2048,
         fft_fps: 20,
         sample_rate: args.sample_rate,
+        audio_enabled: true,
+        deemphasis_tc: 50.0,
     };
 
     let ws_addr: SocketAddr = format!("0.0.0.0:{}", args.ws_port).parse()?;
@@ -87,13 +90,14 @@ async fn main() -> anyhow::Result<()> {
     info!("starting WebSocket server on {}", ws_addr);
 
     let fft_tx_clone = fft_tx.clone();
+    let audio_tx_clone = audio_tx.clone();
 
     // Run WebSocket server and pipeline concurrently
     tokio::select! {
-        _ = run_websocket_server(ws_addr, fft_tx_clone, cmd_tx) => {
+        _ = run_websocket_server(ws_addr, fft_tx_clone, audio_tx_clone, cmd_tx) => {
             info!("WebSocket server stopped");
         }
-        _ = pipeline::run_pipeline(reader, writer, pipeline_config, fft_tx, cmd_rx) => {
+        _ = pipeline::run_pipeline(reader, writer, pipeline_config, fft_tx, audio_tx, cmd_rx) => {
             info!("pipeline stopped");
         }
         _ = tokio::signal::ctrl_c() => {

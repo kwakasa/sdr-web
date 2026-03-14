@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { DEFAULT_WS_URL } from "@/lib/constants";
 import {
   MSG_FFT,
+  MSG_AUDIO,
   MSG_STATUS,
   parseFrame,
   encodeCommand,
@@ -11,6 +12,11 @@ import {
 } from "@/lib/protocol";
 
 const RECONNECT_DELAY_MS = 2000;
+
+interface SDRConnectionOptions {
+  readonly url?: string;
+  readonly onAudioData?: (data: Int16Array) => void;
+}
 
 interface SDRConnectionState {
   readonly connected: boolean;
@@ -23,8 +29,12 @@ interface SDRConnectionState {
 }
 
 export function useSDRConnection(
-  url: string = DEFAULT_WS_URL
+  options?: SDRConnectionOptions
 ): SDRConnectionState {
+  const url = options?.url ?? DEFAULT_WS_URL;
+  const onAudioDataRef = useRef(options?.onAudioData);
+  onAudioDataRef.current = options?.onAudioData;
+
   const [connected, setConnected] = useState(false);
   const [fftData, setFftData] = useState<Uint8Array | null>(null);
   const [status, setStatus] = useState<StatusMessage | null>(null);
@@ -75,6 +85,16 @@ export function useSDRConnection(
 
           if (frame.type === MSG_FFT) {
             setFftData(frame.payload);
+          } else if (frame.type === MSG_AUDIO) {
+            const callback = onAudioDataRef.current;
+            if (callback) {
+              const pcmData = new Int16Array(
+                frame.payload.buffer,
+                frame.payload.byteOffset,
+                Math.floor(frame.payload.byteLength / 2)
+              );
+              callback(pcmData);
+            }
           } else if (frame.type === MSG_STATUS) {
             const decoder = new TextDecoder();
             const json = decoder.decode(frame.payload);

@@ -37,6 +37,19 @@ pub struct ControlMessage {
     pub params: serde_json::Value,
 }
 
+/// Encode audio PCM frame for WebSocket transmission.
+///
+/// PCM data is little-endian i16 samples at 48kHz mono.
+/// Output: [0x02, sample0_lo, sample0_hi, sample1_lo, sample1_hi, ...]
+pub fn encode_audio_frame(pcm: &[i16]) -> Vec<u8> {
+    let mut frame = Vec::with_capacity(1 + pcm.len() * 2);
+    frame.push(MSG_AUDIO);
+    for &sample in pcm {
+        frame.extend_from_slice(&sample.to_le_bytes());
+    }
+    frame
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -91,5 +104,28 @@ mod tests {
         let msg: ControlMessage = serde_json::from_str(json_str).unwrap();
         assert_eq!(msg.command, "set_agc");
         assert_eq!(msg.params["enabled"], true);
+    }
+
+    #[test]
+    fn test_encode_audio_frame() {
+        let pcm: Vec<i16> = vec![0, 1000, -1000, i16::MAX, i16::MIN];
+        let frame = encode_audio_frame(&pcm);
+
+        assert_eq!(frame[0], MSG_AUDIO);
+        assert_eq!(frame.len(), 1 + pcm.len() * 2);
+
+        // Verify each sample is little-endian encoded
+        for (i, &sample) in pcm.iter().enumerate() {
+            let offset = 1 + i * 2;
+            let decoded = i16::from_le_bytes([frame[offset], frame[offset + 1]]);
+            assert_eq!(decoded, sample, "sample {} mismatch", i);
+        }
+    }
+
+    #[test]
+    fn test_encode_audio_frame_empty() {
+        let frame = encode_audio_frame(&[]);
+        assert_eq!(frame.len(), 1);
+        assert_eq!(frame[0], MSG_AUDIO);
     }
 }

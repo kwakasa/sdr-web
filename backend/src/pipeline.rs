@@ -7,9 +7,12 @@ use tokio::time;
 use tracing::{debug, error, info, warn};
 
 use crate::dsp::convert::u8_iq_to_complex;
+use crate::dsp::deemphasis::DeemphasisFilter;
 use crate::dsp::fft::{db_to_u8, FftProcessor};
+use crate::dsp::filter::{Decimator, RealDecimator};
+use crate::dsp::fm_demod::FmDemodulator;
 use crate::rtl_tcp::commands;
-use crate::websocket::protocol::{encode_fft_frame, ControlMessage};
+use crate::websocket::protocol::{encode_audio_frame, encode_fft_frame, ControlMessage};
 
 /// Configuration for the processing pipeline.
 #[derive(Debug, Clone)]
@@ -20,6 +23,10 @@ pub struct PipelineConfig {
     pub fft_fps: u32,
     /// Sample rate in Hz
     pub sample_rate: u32,
+    /// Enable audio demodulation (default: true)
+    pub audio_enabled: bool,
+    /// De-emphasis time constant in microseconds (default: 50.0 for Japan)
+    pub deemphasis_tc: f32,
 }
 
 impl Default for PipelineConfig {
@@ -28,28 +35,50 @@ impl Default for PipelineConfig {
             fft_size: 2048,
             fft_fps: 20,
             sample_rate: 2_048_000,
+            audio_enabled: true,
+            deemphasis_tc: 50.0,
         }
     }
 }
 
 /// Run the processing pipeline.
 ///
-/// Spawns three concurrent tasks:
+/// Spawns concurrent tasks:
 /// - IQ reader: reads raw IQ data from RTL-TCP
 /// - FFT processor: computes FFT at the target frame rate, broadcasts results
+/// - Audio demod: FM demodulates IQ data, broadcasts PCM audio frames
 /// - Command handler: receives control messages and sends RTL-TCP commands
 pub async fn run_pipeline(
     reader: OwnedReadHalf,
     writer: OwnedWriteHalf,
     config: PipelineConfig,
     fft_tx: broadcast::Sender<Vec<u8>>,
+    audio_tx: broadcast::Sender<Vec<u8>>,
     cmd_rx: mpsc::Receiver<ControlMessage>,
 ) {
     let (iq_tx, iq_rx) = mpsc::channel::<Vec<u8>>(32);
 
-    let reader_handle = tokio::spawn(iq_reader_task(reader, config.fft_size, iq_tx));
+    // If audio is enabled, create a second IQ channel for the audio task
+    let (audio_iq_tx, audio_iq_rx) = if config.audio_enabled {
+        let (tx, rx) = mpsc::channel::<Vec<u8>>(32);
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
+
+    let reader_handle = tokio::spawn(iq_reader_task(reader, config.fft_size, iq_tx, audio_iq_tx));
     let fft_handle = tokio::spawn(fft_processor_task(iq_rx, config.clone(), fft_tx));
     let cmd_handle = tokio::spawn(command_handler_task(writer, cmd_rx));
+
+    let audio_handle = if let Some(audio_iq_rx) = audio_iq_rx {
+        Some(tokio::spawn(audio_demod_task(
+            audio_iq_rx,
+            config.clone(),
+            audio_tx,
+        )))
+    } else {
+        None
+    };
 
     tokio::select! {
         result = reader_handle => {
@@ -67,13 +96,29 @@ pub async fn run_pipeline(
                 error!("command handler task failed: {}", e);
             }
         }
+        result = async {
+            match audio_handle {
+                Some(handle) => handle.await,
+                None => futures_util::future::pending().await,
+            }
+        } => {
+            if let Err(e) = result {
+                error!("audio demod task failed: {}", e);
+            }
+        }
     }
 
     info!("pipeline shut down");
 }
 
 /// Read raw IQ data from the RTL-TCP connection in blocks sized for the FFT.
-async fn iq_reader_task(mut reader: OwnedReadHalf, fft_size: usize, iq_tx: mpsc::Sender<Vec<u8>>) {
+/// Sends copies to both the FFT channel and the optional audio channel.
+async fn iq_reader_task(
+    mut reader: OwnedReadHalf,
+    fft_size: usize,
+    iq_tx: mpsc::Sender<Vec<u8>>,
+    audio_iq_tx: Option<mpsc::Sender<Vec<u8>>>,
+) {
     // Each IQ sample is 2 bytes (I + Q), so we need fft_size * 2 bytes per block
     let block_size = fft_size * 2;
     let mut buf = vec![0u8; block_size];
@@ -84,6 +129,12 @@ async fn iq_reader_task(mut reader: OwnedReadHalf, fft_size: usize, iq_tx: mpsc:
                 if iq_tx.send(buf.clone()).await.is_err() {
                     info!("IQ channel closed, stopping reader");
                     break;
+                }
+                if let Some(ref audio_tx) = audio_iq_tx {
+                    if audio_tx.send(buf.clone()).await.is_err() {
+                        info!("audio IQ channel closed, stopping reader");
+                        break;
+                    }
                 }
             }
             Err(e) => {
@@ -193,4 +244,75 @@ async fn command_handler_task(
     }
 
     info!("command handler stopped");
+}
+
+/// FM demodulate IQ data and broadcast PCM audio frames.
+///
+/// Pipeline: IQ → decimate (2.048M → 256k) → FM demod → decimate (256k → 51.2k)
+///   → de-emphasis → f32-to-i16 → encode audio frame → broadcast
+async fn audio_demod_task(
+    mut iq_rx: mpsc::Receiver<Vec<u8>>,
+    config: PipelineConfig,
+    audio_tx: broadcast::Sender<Vec<u8>>,
+) {
+    // Stage 1: Decimate from sample_rate to ~256 kHz
+    let iq_decim_factor = 8_usize;
+    let cutoff1 = 0.45 / iq_decim_factor as f32;
+    let mut iq_decimator = Decimator::new(cutoff1, 51, iq_decim_factor);
+
+    // Stage 2: FM demodulator
+    let mut fm_demod = FmDemodulator::new();
+
+    // Stage 3: Decimate from ~256 kHz to ~51.2 kHz
+    let audio_decim_factor = 5_usize;
+    let cutoff2 = 0.45 / audio_decim_factor as f32;
+    let mut audio_decimator = RealDecimator::new(cutoff2, 51, audio_decim_factor);
+
+    // Stage 4: De-emphasis filter
+    let audio_sample_rate =
+        config.sample_rate as f32 / iq_decim_factor as f32 / audio_decim_factor as f32;
+    let mut deemphasis = DeemphasisFilter::new(config.deemphasis_tc, audio_sample_rate);
+
+    info!(
+        "audio demod started: {}→{}→{:.0} Hz, de-emphasis={} us",
+        config.sample_rate,
+        config.sample_rate / iq_decim_factor as u32,
+        audio_sample_rate,
+        config.deemphasis_tc
+    );
+
+    while let Some(iq_data) = iq_rx.recv().await {
+        // Convert u8 IQ to complex
+        let complex_iq = u8_iq_to_complex(&iq_data);
+
+        // Stage 1: Decimate IQ
+        let decimated_iq = iq_decimator.process(&complex_iq);
+
+        // Stage 2: FM demodulate
+        let demodulated = fm_demod.demodulate(&decimated_iq);
+
+        // Stage 3: Decimate audio
+        let decimated_audio = audio_decimator.process(&demodulated);
+
+        // Stage 4: De-emphasis
+        let deemphasized = deemphasis.process(&decimated_audio);
+
+        // Stage 5: Convert f32 to i16 PCM
+        let pcm: Vec<i16> = deemphasized
+            .iter()
+            .map(|&s| (s * 32767.0).clamp(-32768.0, 32767.0) as i16)
+            .collect();
+
+        if pcm.is_empty() {
+            continue;
+        }
+
+        // Stage 6: Encode and broadcast
+        let frame = encode_audio_frame(&pcm);
+        if audio_tx.send(frame).is_err() {
+            debug!("no WebSocket clients connected, dropping audio frame");
+        }
+    }
+
+    info!("audio demod task stopped");
 }

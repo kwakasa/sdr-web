@@ -1,5 +1,4 @@
-export const MSG_FFT = 0x01;
-export const MSG_AUDIO = 0x02;
+export const MSG_RAW_IQ = 0x01;
 export const MSG_STATUS = 0x03;
 
 export interface ControlCommand {

@@ -1,5 +1,7 @@
 # Rust
+target/
 backend/target/
+wasm-dsp/target/
 **/*.rs.bk
 
 # Node.js

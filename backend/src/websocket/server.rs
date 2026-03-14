@@ -13,13 +13,12 @@ use crate::state::ServerState;
 
 /// Run the WebSocket server, accepting client connections.
 ///
-/// Each connected client receives FFT and audio data frames via broadcast
-/// channels and can send JSON control messages back through the mpsc channel.
+/// Each connected client receives raw IQ data frames via the broadcast
+/// channel and can send JSON control messages back through the mpsc channel.
 /// On connect, each client receives a MSG_STATUS frame with current state.
 pub async fn run_websocket_server(
     addr: SocketAddr,
-    fft_tx: broadcast::Sender<Vec<u8>>,
-    audio_tx: broadcast::Sender<Vec<u8>>,
+    iq_tx: broadcast::Sender<Vec<u8>>,
     cmd_tx: mpsc::Sender<ControlMessage>,
     shared_state: Arc<RwLock<ServerState>>,
 ) {
@@ -48,22 +47,18 @@ pub async fn run_websocket_server(
 
         info!(peer = %peer_addr, "WebSocket client connected");
 
-        let fft_rx = fft_tx.subscribe();
-        let audio_rx = audio_tx.subscribe();
+        let iq_rx = iq_tx.subscribe();
         let cmd_tx = cmd_tx.clone();
         let state = Arc::clone(&shared_state);
 
-        tokio::spawn(handle_client(
-            ws_stream, peer_addr, fft_rx, audio_rx, cmd_tx, state,
-        ));
+        tokio::spawn(handle_client(ws_stream, peer_addr, iq_rx, cmd_tx, state));
     }
 }
 
 async fn handle_client(
     ws_stream: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
     peer_addr: SocketAddr,
-    mut fft_rx: broadcast::Receiver<Vec<u8>>,
-    mut audio_rx: broadcast::Receiver<Vec<u8>>,
+    mut iq_rx: broadcast::Receiver<Vec<u8>>,
     cmd_tx: mpsc::Sender<ControlMessage>,
     shared_state: Arc<RwLock<ServerState>>,
 ) {
@@ -87,37 +82,20 @@ async fn handle_client(
         debug!(peer = %peer_addr, "sent initial status frame");
     }
 
-    // Task: forward FFT and audio data to this client
+    // Task: forward raw IQ data to this client
     let send_peer = peer_addr;
     let send_task = tokio::spawn(async move {
         loop {
-            tokio::select! {
-                result = fft_rx.recv() => {
-                    match result {
-                        Ok(frame) => {
-                            if ws_sender.send(Message::Binary(frame)).await.is_err() {
-                                break;
-                            }
-                        }
-                        Err(broadcast::error::RecvError::Lagged(n)) => {
-                            warn!(peer = %send_peer, skipped = n, "client lagged, skipped FFT frames");
-                        }
-                        Err(broadcast::error::RecvError::Closed) => break,
+            match iq_rx.recv().await {
+                Ok(frame) => {
+                    if ws_sender.send(Message::Binary(frame)).await.is_err() {
+                        break;
                     }
                 }
-                result = audio_rx.recv() => {
-                    match result {
-                        Ok(frame) => {
-                            if ws_sender.send(Message::Binary(frame)).await.is_err() {
-                                break;
-                            }
-                        }
-                        Err(broadcast::error::RecvError::Lagged(n)) => {
-                            warn!(peer = %send_peer, skipped = n, "client lagged, skipped audio frames");
-                        }
-                        Err(broadcast::error::RecvError::Closed) => break,
-                    }
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    warn!(peer = %send_peer, skipped = n, "client lagged, skipped IQ frames");
                 }
+                Err(broadcast::error::RecvError::Closed) => break,
             }
         }
     });

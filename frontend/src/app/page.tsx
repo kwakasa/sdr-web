@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSDRConnection } from "@/hooks/useSDRConnection";
 import { useAudioPlayback } from "@/hooks/useAudioPlayback";
 import { useSpectrumData } from "@/hooks/useSpectrumData";
+import { useWasmDsp } from "@/hooks/useWasmDsp";
 import { SpectrumDisplay } from "@/components/SpectrumDisplay";
 import { WaterfallDisplay } from "@/components/WaterfallDisplay";
 import { FrequencyControl } from "@/components/FrequencyControl";
@@ -30,15 +31,30 @@ function getAudioStatusText(playing: boolean, bufferHealth: number): string {
 }
 
 export default function Home() {
-  const { playing, bufferHealth, togglePlayback, feedAudio } =
+  const { playing, bufferHealth, togglePlayback, feedAudioFloat } =
     useAudioPlayback();
 
-  const connectionOptions = useMemo(
-    () => ({ onAudioData: feedAudio }),
-    [feedAudio]
+  // FFT data from WASM DSP, stored as state for spectrum/waterfall
+  const [fftData, setFftData] = useState<Uint8Array | null>(null);
+
+  // WASM DSP hook: processes raw IQ into FFT + audio
+  const dspCallbacks = useMemo(
+    () => ({
+      onFftData: (data: Uint8Array) => setFftData(data),
+      onAudioData: feedAudioFloat,
+    }),
+    [feedAudioFloat]
   );
 
-  const { connected, reconnecting, fftData, status, sendCommand } =
+  const { ready: wasmReady, sendIqData } = useWasmDsp(dspCallbacks);
+
+  // WebSocket connection: receives raw IQ and forwards to WASM worker
+  const connectionOptions = useMemo(
+    () => ({ onIqData: sendIqData }),
+    [sendIqData]
+  );
+
+  const { connected, reconnecting, status, sendCommand } =
     useSDRConnection(connectionOptions);
 
   const smoothedData = useSpectrumData(fftData);
@@ -136,6 +152,7 @@ export default function Home() {
           audioPlaying={playing}
           bufferHealth={bufferHealth}
           tunerType={tunerType}
+          wasmReady={wasmReady}
         />
       </header>
 

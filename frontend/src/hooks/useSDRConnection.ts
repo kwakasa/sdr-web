@@ -7,8 +7,7 @@ import {
   RECONNECT_MAX_DELAY_MS,
 } from "@/lib/constants";
 import {
-  MSG_FFT,
-  MSG_AUDIO,
+  MSG_RAW_IQ,
   MSG_STATUS,
   parseFrame,
   encodeCommand,
@@ -16,14 +15,13 @@ import {
 } from "@/lib/protocol";
 
 interface SDRConnectionOptions {
+  readonly onIqData?: (data: Uint8Array) => void;
   readonly url?: string;
-  readonly onAudioData?: (data: Int16Array) => void;
 }
 
 interface SDRConnectionState {
   readonly connected: boolean;
   readonly reconnecting: boolean;
-  readonly fftData: Uint8Array | null;
   readonly status: StatusMessage | null;
   readonly sendCommand: (
     command: string,
@@ -35,12 +33,11 @@ export function useSDRConnection(
   options?: SDRConnectionOptions
 ): SDRConnectionState {
   const url = options?.url ?? DEFAULT_WS_URL;
-  const onAudioDataRef = useRef(options?.onAudioData);
-  onAudioDataRef.current = options?.onAudioData;
+  const onIqDataRef = useRef(options?.onIqData);
+  onIqDataRef.current = options?.onIqData;
 
   const [connected, setConnected] = useState(false);
   const [reconnecting, setReconnecting] = useState(false);
-  const [fftData, setFftData] = useState<Uint8Array | null>(null);
   const [status, setStatus] = useState<StatusMessage | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -105,17 +102,10 @@ export function useSDRConnection(
         try {
           const frame = parseFrame(event.data);
 
-          if (frame.type === MSG_FFT) {
-            setFftData(frame.payload);
-          } else if (frame.type === MSG_AUDIO) {
-            const callback = onAudioDataRef.current;
+          if (frame.type === MSG_RAW_IQ) {
+            const callback = onIqDataRef.current;
             if (callback) {
-              const pcmData = new Int16Array(
-                frame.payload.buffer,
-                frame.payload.byteOffset,
-                Math.floor(frame.payload.byteLength / 2)
-              );
-              callback(pcmData);
+              callback(frame.payload);
             }
           } else if (frame.type === MSG_STATUS) {
             const decoder = new TextDecoder();
@@ -154,5 +144,5 @@ export function useSDRConnection(
     []
   );
 
-  return { connected, reconnecting, fftData, status, sendCommand };
+  return { connected, reconnecting, status, sendCommand };
 }

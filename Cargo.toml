@@ -1,0 +1,3 @@
+[workspace]
+members = ["backend", "wasm-dsp"]
+resolver = "2"

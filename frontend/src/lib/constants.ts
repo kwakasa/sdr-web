@@ -12,6 +12,10 @@ export const MIN_GAIN_DB = 0;
 export const MAX_GAIN_DB = 49.6;
 export const GAIN_STEP_DB = 1;
 
+// IQ / DSP
+export const IQ_CHUNK_SIZE = 16384;
+export const DSP_FFT_INTERVAL = 50; // compute FFT every N chunks (~20fps)
+
 // Reconnection
 export const RECONNECT_BASE_DELAY_MS = 1000;
 export const RECONNECT_MAX_DELAY_MS = 10_000;

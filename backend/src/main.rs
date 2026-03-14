@@ -1,5 +1,4 @@
-mod dsp;
-mod pipeline;
+mod proxy;
 mod rtl_tcp;
 mod state;
 mod websocket;
@@ -13,13 +12,12 @@ use tokio::sync::{broadcast, mpsc, RwLock};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
-use pipeline::PipelineConfig;
 use rtl_tcp::RtlTcpClient;
 use state::ServerState;
 use websocket::protocol::ControlMessage;
 use websocket::server::run_websocket_server;
 
-/// SDR Web Backend -- connects to rtl_tcp, computes FFT, serves via WebSocket.
+/// SDR Web Backend -- connects to rtl_tcp, proxies raw IQ via WebSocket.
 #[derive(Parser, Debug)]
 #[command(name = "sdr-web-backend", version, about)]
 struct Args {
@@ -63,44 +61,34 @@ async fn main() -> anyhow::Result<()> {
         "starting sdr-web-backend"
     );
 
-    // Shared state accessible by WebSocket server and pipeline
+    // Shared state accessible by WebSocket server and proxy
     let shared_state = Arc::new(RwLock::new(ServerState::new(
         args.frequency,
         args.sample_rate,
     )));
 
-    // Broadcast channels survive reconnections so WebSocket clients stay connected
-    let (fft_tx, _) = broadcast::channel::<Vec<u8>>(64);
-    let (audio_tx, _) = broadcast::channel::<Vec<u8>>(64);
+    // Broadcast channel for raw IQ data (survives reconnections)
+    let (iq_tx, _) = broadcast::channel::<Vec<u8>>(64);
     let (cmd_tx, cmd_rx) = mpsc::channel::<ControlMessage>(32);
-
-    let pipeline_config = PipelineConfig {
-        fft_size: 2048,
-        fft_fps: 20,
-        sample_rate: args.sample_rate,
-        audio_enabled: true,
-        deemphasis_tc: 50.0,
-    };
 
     let ws_addr: SocketAddr = format!("0.0.0.0:{}", args.ws_port).parse()?;
 
-    // Start the WebSocket server (runs independently of the RTL-TCP pipeline)
-    let ws_fft_tx = fft_tx.clone();
-    let ws_audio_tx = audio_tx.clone();
+    // Start the WebSocket server (runs independently of the rtl_tcp proxy)
+    let ws_iq_tx = iq_tx.clone();
     let ws_state = Arc::clone(&shared_state);
     let ws_handle = tokio::spawn(async move {
-        run_websocket_server(ws_addr, ws_fft_tx, ws_audio_tx, cmd_tx, ws_state).await;
+        run_websocket_server(ws_addr, ws_iq_tx, cmd_tx, ws_state).await;
     });
 
-    // RTL-TCP reconnection loop with exponential backoff
+    // rtl_tcp reconnection loop with exponential backoff
     let rtl_host = args.rtl_host;
     let rtl_port = args.rtl_port;
     let frequency = args.frequency;
     let sample_rate = args.sample_rate;
-    let pipeline_state = Arc::clone(&shared_state);
+    let proxy_state = Arc::clone(&shared_state);
 
-    let pipeline_loop = tokio::spawn(async move {
-        // cmd_rx must move into this task; it will be replaced per-reconnection via a relay
+    let proxy_loop = tokio::spawn(async move {
+        // cmd_rx must move into this task; it will be reused across reconnections
         let mut cmd_rx = cmd_rx;
         let mut backoff = Duration::from_secs(1);
 
@@ -117,7 +105,7 @@ async fn main() -> anyhow::Result<()> {
 
                     // Update shared state with tuner info
                     {
-                        let mut state = pipeline_state.write().await;
+                        let mut state = proxy_state.write().await;
                         state.tuner_type = header.tuner_type;
                         state.gain_count = header.gain_count;
                         state.frequency = frequency;
@@ -125,10 +113,7 @@ async fn main() -> anyhow::Result<()> {
                     }
 
                     // Set initial frequency and sample rate
-                    if let Err(e) = client
-                        .send_command(rtl_tcp::SET_FREQUENCY, frequency)
-                        .await
-                    {
+                    if let Err(e) = client.send_command(rtl_tcp::SET_FREQUENCY, frequency).await {
                         warn!(error = %e, "failed to set initial frequency");
                         continue;
                     }
@@ -143,25 +128,23 @@ async fn main() -> anyhow::Result<()> {
                     }
                     info!(sample_rate, "set initial sample rate");
 
-                    // Split client for the pipeline
+                    // Split client for the proxy
                     let (reader, writer) = client.into_split();
 
                     // Reset backoff on successful connection
                     backoff = Duration::from_secs(1);
 
-                    // Run pipeline (blocks until error/disconnect)
-                    if let Err(e) = pipeline::run_pipeline(
+                    // Run proxy (blocks until error/disconnect)
+                    if let Err(e) = proxy::run_proxy(
                         reader,
                         writer,
-                        pipeline_config.clone(),
-                        fft_tx.clone(),
-                        audio_tx.clone(),
+                        iq_tx.clone(),
                         &mut cmd_rx,
-                        Arc::clone(&pipeline_state),
+                        Arc::clone(&proxy_state),
                     )
                     .await
                     {
-                        warn!(error = %e, "pipeline error");
+                        warn!(error = %e, "proxy error");
                     }
                 }
                 Err(e) => {
@@ -180,8 +163,8 @@ async fn main() -> anyhow::Result<()> {
         _ = ws_handle => {
             info!("WebSocket server stopped");
         }
-        _ = pipeline_loop => {
-            info!("pipeline loop stopped");
+        _ = proxy_loop => {
+            info!("proxy loop stopped");
         }
         _ = tokio::signal::ctrl_c() => {
             info!("received Ctrl+C, shutting down");

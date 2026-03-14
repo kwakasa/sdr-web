@@ -8,6 +8,7 @@ interface StatusBarProps {
   readonly audioPlaying: boolean;
   readonly bufferHealth: number;
   readonly tunerType?: string;
+  readonly wasmReady: boolean;
 }
 
 function formatFrequencyMHz(hz: number): string {
@@ -44,6 +45,7 @@ export function StatusBar({
   audioPlaying,
   bufferHealth,
   tunerType,
+  wasmReady,
 }: StatusBarProps) {
   return (
     <div className="flex flex-wrap items-center gap-4 rounded bg-gray-900 px-4 py-2 text-sm lg:gap-6">
@@ -76,6 +78,17 @@ export function StatusBar({
           <span className="font-mono text-cyan-400">{tunerType}</span>
         </div>
       )}
+
+      <div className="flex items-center gap-2">
+        <span
+          className={`inline-block h-2.5 w-2.5 rounded-full ${
+            wasmReady ? "bg-green-500" : "bg-yellow-500 animate-pulse"
+          }`}
+        />
+        <span className="text-gray-400">
+          {wasmReady ? "Browser DSP" : "Loading WASM..."}
+        </span>
+      </div>
 
       <div className="flex items-center gap-2">
         <span

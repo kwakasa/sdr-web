@@ -56,6 +56,7 @@ export interface AudioPlaybackState {
   readonly bufferHealth: number;
   readonly togglePlayback: () => void;
   readonly feedAudio: (pcmData: Int16Array) => void;
+  readonly feedAudioFloat: (data: Float32Array) => void;
 }
 
 export function useAudioPlayback(): AudioPlaybackState {
@@ -88,6 +89,10 @@ export function useAudioPlayback(): AudioPlaybackState {
       floatData[i] = pcmData[i] / 32768.0;
     }
     ringBufferRef.current.write(floatData);
+  }, []);
+
+  const feedAudioFloat = useCallback((data: Float32Array) => {
+    ringBufferRef.current.write(data);
   }, []);
 
   const togglePlayback = useCallback(() => {
@@ -150,5 +155,5 @@ export function useAudioPlayback(): AudioPlaybackState {
     };
   }, [stopHealthReporting]);
 
-  return { playing, bufferHealth, togglePlayback, feedAudio };
+  return { playing, bufferHealth, togglePlayback, feedAudio, feedAudioFloat };
 }

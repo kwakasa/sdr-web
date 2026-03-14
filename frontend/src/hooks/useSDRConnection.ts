@@ -1,7 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { DEFAULT_WS_URL } from "@/lib/constants";
+import {
+  DEFAULT_WS_URL,
+  RECONNECT_BASE_DELAY_MS,
+  RECONNECT_MAX_DELAY_MS,
+} from "@/lib/constants";
 import {
   MSG_FFT,
   MSG_AUDIO,
@@ -11,8 +15,6 @@ import {
   type StatusMessage,
 } from "@/lib/protocol";
 
-const RECONNECT_DELAY_MS = 2000;
-
 interface SDRConnectionOptions {
   readonly url?: string;
   readonly onAudioData?: (data: Int16Array) => void;
@@ -20,6 +22,7 @@ interface SDRConnectionOptions {
 
 interface SDRConnectionState {
   readonly connected: boolean;
+  readonly reconnecting: boolean;
   readonly fftData: Uint8Array | null;
   readonly status: StatusMessage | null;
   readonly sendCommand: (
@@ -36,12 +39,14 @@ export function useSDRConnection(
   onAudioDataRef.current = options?.onAudioData;
 
   const [connected, setConnected] = useState(false);
+  const [reconnecting, setReconnecting] = useState(false);
   const [fftData, setFftData] = useState<Uint8Array | null>(null);
   const [status, setStatus] = useState<StatusMessage | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
+  const backoffRef = useRef(RECONNECT_BASE_DELAY_MS);
 
   const clearReconnectTimer = useCallback(() => {
     if (reconnectTimerRef.current !== null) {
@@ -50,7 +55,22 @@ export function useSDRConnection(
     }
   }, []);
 
-  const connect = useCallback(() => {
+  const scheduleReconnect = useCallback(() => {
+    if (!mountedRef.current) return;
+
+    setReconnecting(true);
+    const delay = backoffRef.current;
+    backoffRef.current = Math.min(delay * 2, RECONNECT_MAX_DELAY_MS);
+
+    reconnectTimerRef.current = setTimeout(() => {
+      if (mountedRef.current) {
+        connectWs();
+      }
+    }, delay);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const connectWs = useCallback(() => {
     if (!mountedRef.current) return;
 
     clearReconnectTimer();
@@ -62,13 +82,15 @@ export function useSDRConnection(
     ws.onopen = () => {
       if (mountedRef.current) {
         setConnected(true);
+        setReconnecting(false);
+        backoffRef.current = RECONNECT_BASE_DELAY_MS;
       }
     };
 
     ws.onclose = () => {
       if (mountedRef.current) {
         setConnected(false);
-        reconnectTimerRef.current = setTimeout(connect, RECONNECT_DELAY_MS);
+        scheduleReconnect();
       }
     };
 
@@ -106,11 +128,11 @@ export function useSDRConnection(
         }
       }
     };
-  }, [url, clearReconnectTimer]);
+  }, [url, clearReconnectTimer, scheduleReconnect]);
 
   useEffect(() => {
     mountedRef.current = true;
-    connect();
+    connectWs();
 
     return () => {
       mountedRef.current = false;
@@ -120,7 +142,7 @@ export function useSDRConnection(
         wsRef.current = null;
       }
     };
-  }, [connect, clearReconnectTimer]);
+  }, [connectWs, clearReconnectTimer]);
 
   const sendCommand = useCallback(
     (command: string, params: Record<string, unknown>) => {
@@ -132,5 +154,5 @@ export function useSDRConnection(
     []
   );
 
-  return { connected, fftData, status, sendCommand };
+  return { connected, reconnecting, fftData, status, sendCommand };
 }

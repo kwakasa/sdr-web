@@ -2,10 +2,12 @@
 
 interface StatusBarProps {
   readonly connected: boolean;
+  readonly reconnecting: boolean;
   readonly frequency: number;
   readonly sampleRate: number;
   readonly audioPlaying: boolean;
   readonly bufferHealth: number;
+  readonly tunerType?: string;
 }
 
 function formatFrequencyMHz(hz: number): string {
@@ -22,23 +24,35 @@ function getBufferBarColor(health: number): string {
   return "bg-red-500";
 }
 
+function getConnectionDot(connected: boolean, reconnecting: boolean): string {
+  if (connected) return "bg-green-500";
+  if (reconnecting) return "bg-yellow-500 animate-pulse";
+  return "bg-red-500";
+}
+
+function getConnectionText(connected: boolean, reconnecting: boolean): string {
+  if (connected) return "Connected";
+  if (reconnecting) return "Reconnecting...";
+  return "Disconnected";
+}
+
 export function StatusBar({
   connected,
+  reconnecting,
   frequency,
   sampleRate,
   audioPlaying,
   bufferHealth,
+  tunerType,
 }: StatusBarProps) {
   return (
-    <div className="flex items-center gap-6 rounded bg-gray-900 px-4 py-2 text-sm">
+    <div className="flex flex-wrap items-center gap-4 rounded bg-gray-900 px-4 py-2 text-sm lg:gap-6">
       <div className="flex items-center gap-2">
         <span
-          className={`inline-block h-2.5 w-2.5 rounded-full ${
-            connected ? "bg-green-500" : "bg-red-500"
-          }`}
+          className={`inline-block h-2.5 w-2.5 rounded-full ${getConnectionDot(connected, reconnecting)}`}
         />
         <span className="text-gray-400">
-          {connected ? "Connected" : "Disconnected"}
+          {getConnectionText(connected, reconnecting)}
         </span>
       </div>
 
@@ -55,6 +69,13 @@ export function StatusBar({
           {formatSampleRateMsps(sampleRate)} Msps
         </span>
       </div>
+
+      {tunerType && (
+        <div className="flex items-center gap-2">
+          <span className="text-gray-500">Tuner:</span>
+          <span className="font-mono text-cyan-400">{tunerType}</span>
+        </div>
+      )}
 
       <div className="flex items-center gap-2">
         <span
@@ -75,6 +96,10 @@ export function StatusBar({
             </div>
           </div>
         )}
+      </div>
+
+      <div className="hidden text-xs text-gray-600 lg:block">
+        ↑↓ freq | Space play
       </div>
     </div>
   );

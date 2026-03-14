@@ -1,16 +1,21 @@
 mod dsp;
 mod pipeline;
 mod rtl_tcp;
+mod state;
 mod websocket;
 
 use std::net::SocketAddr;
+use std::sync::Arc;
+use std::time::Duration;
 
 use clap::Parser;
-use tokio::sync::{broadcast, mpsc};
-use tracing::info;
+use tokio::sync::{broadcast, mpsc, RwLock};
+use tracing::{info, warn};
+use tracing_subscriber::EnvFilter;
 
 use pipeline::PipelineConfig;
 use rtl_tcp::RtlTcpClient;
+use state::ServerState;
 use websocket::protocol::ControlMessage;
 use websocket::server::run_websocket_server;
 
@@ -41,38 +46,30 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .init();
 
     let args = Args::parse();
 
     info!(
-        "connecting to rtl_tcp at {}:{}",
-        args.rtl_host, args.rtl_port
+        host = %args.rtl_host,
+        port = args.rtl_port,
+        ws_port = args.ws_port,
+        frequency = args.frequency,
+        sample_rate = args.sample_rate,
+        "starting sdr-web-backend"
     );
 
-    let (mut client, header) = RtlTcpClient::connect(&args.rtl_host, args.rtl_port).await?;
+    // Shared state accessible by WebSocket server and pipeline
+    let shared_state = Arc::new(RwLock::new(ServerState::new(
+        args.frequency,
+        args.sample_rate,
+    )));
 
-    info!(
-        "connected to rtl_tcp: tuner_type={}, gain_count={}",
-        header.tuner_type, header.gain_count
-    );
-
-    // Set initial frequency
-    client
-        .send_command(rtl_tcp::SET_FREQUENCY, args.frequency)
-        .await?;
-    info!("set frequency to {} Hz", args.frequency);
-
-    // Set sample rate
-    client
-        .send_command(rtl_tcp::SET_SAMPLE_RATE, args.sample_rate)
-        .await?;
-    info!("set sample rate to {} Hz", args.sample_rate);
-
-    // Split client into reader/writer for the pipeline
-    let (reader, writer) = client.into_split();
-
-    // Create channels
+    // Broadcast channels survive reconnections so WebSocket clients stay connected
     let (fft_tx, _) = broadcast::channel::<Vec<u8>>(64);
     let (audio_tx, _) = broadcast::channel::<Vec<u8>>(64);
     let (cmd_tx, cmd_rx) = mpsc::channel::<ControlMessage>(32);
@@ -87,18 +84,104 @@ async fn main() -> anyhow::Result<()> {
 
     let ws_addr: SocketAddr = format!("0.0.0.0:{}", args.ws_port).parse()?;
 
-    info!("starting WebSocket server on {}", ws_addr);
+    // Start the WebSocket server (runs independently of the RTL-TCP pipeline)
+    let ws_fft_tx = fft_tx.clone();
+    let ws_audio_tx = audio_tx.clone();
+    let ws_state = Arc::clone(&shared_state);
+    let ws_handle = tokio::spawn(async move {
+        run_websocket_server(ws_addr, ws_fft_tx, ws_audio_tx, cmd_tx, ws_state).await;
+    });
 
-    let fft_tx_clone = fft_tx.clone();
-    let audio_tx_clone = audio_tx.clone();
+    // RTL-TCP reconnection loop with exponential backoff
+    let rtl_host = args.rtl_host;
+    let rtl_port = args.rtl_port;
+    let frequency = args.frequency;
+    let sample_rate = args.sample_rate;
+    let pipeline_state = Arc::clone(&shared_state);
 
-    // Run WebSocket server and pipeline concurrently
+    let pipeline_loop = tokio::spawn(async move {
+        // cmd_rx must move into this task; it will be replaced per-reconnection via a relay
+        let mut cmd_rx = cmd_rx;
+        let mut backoff = Duration::from_secs(1);
+
+        loop {
+            info!(host = %rtl_host, port = rtl_port, "connecting to rtl_tcp");
+
+            match RtlTcpClient::connect(&rtl_host, rtl_port).await {
+                Ok((mut client, header)) => {
+                    info!(
+                        tuner_type = header.tuner_type,
+                        gain_count = header.gain_count,
+                        "connected to rtl_tcp"
+                    );
+
+                    // Update shared state with tuner info
+                    {
+                        let mut state = pipeline_state.write().await;
+                        state.tuner_type = header.tuner_type;
+                        state.gain_count = header.gain_count;
+                        state.frequency = frequency;
+                        state.sample_rate = sample_rate;
+                    }
+
+                    // Set initial frequency and sample rate
+                    if let Err(e) = client
+                        .send_command(rtl_tcp::SET_FREQUENCY, frequency)
+                        .await
+                    {
+                        warn!(error = %e, "failed to set initial frequency");
+                        continue;
+                    }
+                    info!(frequency, "set initial frequency");
+
+                    if let Err(e) = client
+                        .send_command(rtl_tcp::SET_SAMPLE_RATE, sample_rate)
+                        .await
+                    {
+                        warn!(error = %e, "failed to set initial sample rate");
+                        continue;
+                    }
+                    info!(sample_rate, "set initial sample rate");
+
+                    // Split client for the pipeline
+                    let (reader, writer) = client.into_split();
+
+                    // Reset backoff on successful connection
+                    backoff = Duration::from_secs(1);
+
+                    // Run pipeline (blocks until error/disconnect)
+                    if let Err(e) = pipeline::run_pipeline(
+                        reader,
+                        writer,
+                        pipeline_config.clone(),
+                        fft_tx.clone(),
+                        audio_tx.clone(),
+                        &mut cmd_rx,
+                        Arc::clone(&pipeline_state),
+                    )
+                    .await
+                    {
+                        warn!(error = %e, "pipeline error");
+                    }
+                }
+                Err(e) => {
+                    warn!(error = %e, "failed to connect to rtl_tcp");
+                }
+            }
+
+            info!(backoff_secs = backoff.as_secs(), "reconnecting to rtl_tcp");
+            tokio::time::sleep(backoff).await;
+            backoff = (backoff * 2).min(Duration::from_secs(10));
+        }
+    });
+
+    // Wait for shutdown signal or either task to complete
     tokio::select! {
-        _ = run_websocket_server(ws_addr, fft_tx_clone, audio_tx_clone, cmd_tx) => {
+        _ = ws_handle => {
             info!("WebSocket server stopped");
         }
-        _ = pipeline::run_pipeline(reader, writer, pipeline_config, fft_tx, audio_tx, cmd_rx) => {
-            info!("pipeline stopped");
+        _ = pipeline_loop => {
+            info!("pipeline loop stopped");
         }
         _ = tokio::signal::ctrl_c() => {
             info!("received Ctrl+C, shutting down");

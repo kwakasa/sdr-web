@@ -11,6 +11,8 @@ export interface StatusMessage {
   readonly frequency: number;
   readonly sampleRate: number;
   readonly gain: number;
+  readonly agcEnabled?: boolean;
+  readonly tunerType?: string;
 }
 
 export interface ParsedFrame {

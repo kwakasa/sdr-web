@@ -13,12 +13,15 @@ import { StatusBar } from "@/components/StatusBar";
 import {
   DEFAULT_FREQUENCY,
   DEFAULT_SAMPLE_RATE,
+  getDefaultWebSocketUrl,
   MIN_FREQUENCY_HZ,
   MAX_FREQUENCY_HZ,
 } from "@/lib/constants";
 
 const SPECTRUM_HEIGHT = 300;
 const WATERFALL_HEIGHT = 200;
+const SMALL_TUNING_STEP_HZ = 100_000;
+const LARGE_TUNING_STEP_HZ = 1_000_000;
 
 function clampFrequency(hz: number): number {
   return Math.max(MIN_FREQUENCY_HZ, Math.min(MAX_FREQUENCY_HZ, hz));
@@ -30,9 +33,29 @@ function getAudioStatusText(playing: boolean, bufferHealth: number): string {
   return "Playing";
 }
 
+function sanitizeWebSocketUrl(input: string): string {
+  const trimmed = input.trim();
+  if (trimmed.length === 0) {
+    return getDefaultWebSocketUrl();
+  }
+
+  if (/^wss?:\/\//i.test(trimmed)) {
+    return trimmed;
+  }
+
+  return `${window.location.protocol === "https:" ? "wss" : "ws"}://${trimmed}`;
+}
+
 export default function Home() {
   const { playing, bufferHealth, togglePlayback, feedAudioFloat } =
     useAudioPlayback();
+
+  const [wsUrl, setWsUrl] = useState("");
+
+  useEffect(() => {
+    const stored = window.localStorage.getItem("sdr-web.ws-url");
+    setWsUrl(stored ?? getDefaultWebSocketUrl());
+  }, []);
 
   // FFT data from WASM DSP, stored as state for spectrum/waterfall
   const [fftData, setFftData] = useState<Uint8Array | null>(null);
@@ -50,8 +73,8 @@ export default function Home() {
 
   // WebSocket connection: receives raw IQ and forwards to WASM worker
   const connectionOptions = useMemo(
-    () => ({ onIqData: sendIqData }),
-    [sendIqData]
+    () => ({ onIqData: sendIqData, url: wsUrl || undefined }),
+    [sendIqData, wsUrl]
   );
 
   const { connected, reconnecting, status, sendCommand } =
@@ -95,10 +118,20 @@ export default function Home() {
   const handleAgcToggle = useCallback(
     (enabled: boolean) => {
       setAgcEnabled(enabled);
-      sendCommand("set_agc", { value: enabled });
+      sendCommand("set_agc", { enabled });
     },
     [sendCommand]
   );
+
+  const handleWsUrlChange = useCallback((value: string) => {
+    setWsUrl(value);
+  }, []);
+
+  const handleWsUrlBlur = useCallback(() => {
+    const normalized = sanitizeWebSocketUrl(wsUrl);
+    setWsUrl(normalized);
+    window.localStorage.setItem("sdr-web.ws-url", normalized);
+  }, [wsUrl]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -110,19 +143,19 @@ export default function Home() {
       switch (e.key) {
         case "ArrowUp":
           e.preventDefault();
-          handleFrequencyChange(frequency + 100_000);
+          handleFrequencyChange(frequency + SMALL_TUNING_STEP_HZ);
           break;
         case "ArrowDown":
           e.preventDefault();
-          handleFrequencyChange(frequency - 100_000);
+          handleFrequencyChange(frequency - SMALL_TUNING_STEP_HZ);
           break;
         case "PageUp":
           e.preventDefault();
-          handleFrequencyChange(frequency + 1_000_000);
+          handleFrequencyChange(frequency + LARGE_TUNING_STEP_HZ);
           break;
         case "PageDown":
           e.preventDefault();
-          handleFrequencyChange(frequency - 1_000_000);
+          handleFrequencyChange(frequency - LARGE_TUNING_STEP_HZ);
           break;
         case " ":
           e.preventDefault();
@@ -169,6 +202,23 @@ export default function Home() {
             onGainChange={handleGainChange}
             onAgcToggle={handleAgcToggle}
           />
+        </div>
+
+        <div className="flex flex-col gap-2 rounded bg-gray-900/50 px-4 py-3">
+          <label className="text-xs font-medium uppercase tracking-wide text-gray-500">
+            SDR WebSocket endpoint
+          </label>
+          <input
+            type="text"
+            value={wsUrl}
+            onChange={(e) => handleWsUrlChange(e.target.value)}
+            onBlur={handleWsUrlBlur}
+            className="w-full rounded border border-gray-700 bg-gray-950 px-3 py-2 font-mono text-sm text-cyan-400 outline-none focus:border-cyan-600"
+            placeholder="ws://host:8080"
+          />
+          <p className="text-xs text-gray-500">
+            Set the backend endpoint explicitly for LAN/Tailscale access. Saved in this browser.
+          </p>
         </div>
 
         {/* Spectrum Display */}

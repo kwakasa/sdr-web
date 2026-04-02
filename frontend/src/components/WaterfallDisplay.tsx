@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef } from "react";
+import { formatFreqMHzLabel } from "@/lib/constants";
 
 interface WaterfallDisplayProps {
   readonly fftData: Uint8Array | null;
@@ -47,13 +48,6 @@ function buildColorLUT(): Uint8Array {
   }
 
   return lut;
-}
-
-function formatFreqLabel(hz: number): string {
-  const mhz = hz / 1_000_000;
-  if (mhz >= 1000) return `${mhz.toFixed(0)}`;
-  if (mhz >= 100) return `${mhz.toFixed(1)}`;
-  return `${mhz.toFixed(2)}`;
 }
 
 export function WaterfallDisplay({
@@ -116,7 +110,7 @@ export function WaterfallDisplay({
         ctx.lineTo(x, drawH);
         ctx.stroke();
 
-        ctx.fillText(`${formatFreqLabel(freq)}`, x, drawH + 16);
+        ctx.fillText(`${formatFreqMHzLabel(freq)}`, x, drawH + 16);
       }
 
       ctx.textAlign = "right";

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  DEFAULT_WS_URL,
+  getDefaultWebSocketUrl,
   RECONNECT_BASE_DELAY_MS,
   RECONNECT_MAX_DELAY_MS,
 } from "@/lib/constants";
@@ -32,7 +32,9 @@ interface SDRConnectionState {
 export function useSDRConnection(
   options?: SDRConnectionOptions
 ): SDRConnectionState {
-  const url = options?.url ?? DEFAULT_WS_URL;
+  const urlRef = useRef(options?.url ?? getDefaultWebSocketUrl());
+  urlRef.current = options?.url ?? getDefaultWebSocketUrl();
+
   const onIqDataRef = useRef(options?.onIqData);
   onIqDataRef.current = options?.onIqData;
 
@@ -44,6 +46,8 @@ export function useSDRConnection(
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
   const backoffRef = useRef(RECONNECT_BASE_DELAY_MS);
+  const textDecoderRef = useRef(new TextDecoder());
+  const connectWsRef = useRef<() => void>(() => {});
 
   const clearReconnectTimer = useCallback(() => {
     if (reconnectTimerRef.current !== null) {
@@ -53,18 +57,18 @@ export function useSDRConnection(
   }, []);
 
   const scheduleReconnect = useCallback(() => {
-    if (!mountedRef.current) return;
+    if (!mountedRef.current || reconnectTimerRef.current !== null) return;
 
     setReconnecting(true);
     const delay = backoffRef.current;
     backoffRef.current = Math.min(delay * 2, RECONNECT_MAX_DELAY_MS);
 
     reconnectTimerRef.current = setTimeout(() => {
+      reconnectTimerRef.current = null;
       if (mountedRef.current) {
-        connectWs();
+        connectWsRef.current();
       }
     }, delay);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const connectWs = useCallback(() => {
@@ -72,7 +76,12 @@ export function useSDRConnection(
 
     clearReconnectTimer();
 
-    const ws = new WebSocket(url);
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+
+    const ws = new WebSocket(urlRef.current);
     ws.binaryType = "arraybuffer";
     wsRef.current = ws;
 
@@ -85,6 +94,10 @@ export function useSDRConnection(
     };
 
     ws.onclose = () => {
+      if (wsRef.current === ws) {
+        wsRef.current = null;
+      }
+
       if (mountedRef.current) {
         setConnected(false);
         scheduleReconnect();
@@ -96,29 +109,28 @@ export function useSDRConnection(
     };
 
     ws.onmessage = (event: MessageEvent) => {
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || !(event.data instanceof ArrayBuffer)) return;
 
-      if (event.data instanceof ArrayBuffer) {
-        try {
-          const frame = parseFrame(event.data);
+      try {
+        const frame = parseFrame(event.data);
 
-          if (frame.type === MSG_RAW_IQ) {
-            const callback = onIqDataRef.current;
-            if (callback) {
-              callback(frame.payload);
-            }
-          } else if (frame.type === MSG_STATUS) {
-            const decoder = new TextDecoder();
-            const json = decoder.decode(frame.payload);
-            const parsed = JSON.parse(json) as StatusMessage;
-            setStatus(parsed);
-          }
-        } catch (err) {
-          console.error("Failed to parse WebSocket frame:", err);
+        if (frame.type === MSG_RAW_IQ) {
+          onIqDataRef.current?.(frame.payload);
+          return;
         }
+
+        if (frame.type === MSG_STATUS) {
+          const json = textDecoderRef.current.decode(frame.payload);
+          const parsed = JSON.parse(json) as StatusMessage;
+          setStatus(parsed);
+        }
+      } catch (err) {
+        console.error("Failed to parse WebSocket frame:", err);
       }
     };
-  }, [url, clearReconnectTimer, scheduleReconnect]);
+  }, [clearReconnectTimer, scheduleReconnect]);
+
+  connectWsRef.current = connectWs;
 
   useEffect(() => {
     mountedRef.current = true;

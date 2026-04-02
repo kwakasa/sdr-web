@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef } from "react";
+import { formatFreqMHzLabel } from "@/lib/constants";
 
 interface SpectrumDisplayProps {
   readonly fftData: Uint8Array | null;
@@ -18,13 +19,6 @@ const CENTER_LINE_COLOR = "rgba(234, 179, 8, 0.5)";
 const GRID_LINES_HORIZONTAL = 5;
 const LABEL_AREA_HEIGHT = 24;
 const PEAK_DECAY_RATE = 0.5;
-
-function formatFreqLabel(hz: number): string {
-  const mhz = hz / 1_000_000;
-  if (mhz >= 1000) return `${mhz.toFixed(0)}`;
-  if (mhz >= 100) return `${mhz.toFixed(1)}`;
-  return `${mhz.toFixed(2)}`;
-}
 
 export function SpectrumDisplay({
   fftData,
@@ -115,7 +109,7 @@ export function SpectrumDisplay({
         ctx.lineTo(x, drawH);
         ctx.stroke();
 
-        ctx.fillText(`${formatFreqLabel(freq)}`, x, drawH + 16);
+        ctx.fillText(`${formatFreqMHzLabel(freq)}`, x, drawH + 16);
       }
 
       // "MHz" label at right edge

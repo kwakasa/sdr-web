@@ -32,7 +32,7 @@ The backend is a thin TCP→WebSocket proxy with zero per-client DSP cost. All h
 ### Prerequisites
 
 - RTL-SDR dongle + `rtl_tcp` (from [librtlsdr](https://github.com/steve-m/librtlsdr))
-- Rust toolchain (1.75+)
+- Rust toolchain (1.75+) with `cargo` available on your `PATH`
 - [wasm-pack](https://rustwasm.github.io/wasm-pack/installer/) (`cargo install wasm-pack`)
 - Node.js (20+)
 
@@ -113,8 +113,9 @@ Single connection on `ws://localhost:8080`, multiplexed:
 
 ```bash
 # Build and test everything
-cargo test                    # 45 tests (20 backend + 25 wasm-dsp)
-cargo fmt && cargo clippy     # format + lint
+cargo test                    # Rust workspace tests (backend + wasm-dsp)
+cargo fmt --all               # format Rust code
+cargo clippy --all-targets --all-features -- -D warnings
 
 # Backend
 cd backend
@@ -125,10 +126,13 @@ wasm-pack build --target web --out-dir ../frontend/src/wasm wasm-dsp
 
 # Frontend
 cd frontend
+npm install
 npm run dev --turbopack       # dev server
 npm run build                 # production build
 npm run lint                  # lint
 ```
+
+If `cargo` is not found, make sure your Rust toolchain is installed and loaded into your shell first.
 
 ## License
 

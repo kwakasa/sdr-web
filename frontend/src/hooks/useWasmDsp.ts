@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { DSP_FFT_INTERVAL, FFT_SIZE } from "@/lib/constants";
+import { FFT_SIZE } from "@/lib/constants";
 
 interface WasmDspOptions {
   readonly onFftData?: (data: Uint8Array) => void;
@@ -30,6 +30,7 @@ export function useWasmDsp(options: WasmDspOptions): WasmDspState {
   const deemphasisTcUs = options.deemphasisTcUs ?? 50.0;
 
   useEffect(() => {
+    let cancelled = false;
     const worker = new Worker(
       new URL("../workers/dsp-worker.ts", import.meta.url)
     );
@@ -40,18 +41,19 @@ export function useWasmDsp(options: WasmDspOptions): WasmDspState {
 
       switch (type) {
         case "ready":
-          setReady(true);
+          if (!cancelled) {
+            setReady(true);
+          }
           break;
-        case "fft": {
-          const cb = onFftDataRef.current;
-          if (cb) cb(data as Uint8Array);
+        case "fft":
+          onFftDataRef.current?.(data as Uint8Array);
           break;
-        }
-        case "audio": {
-          const cb = onAudioDataRef.current;
-          if (cb) cb(data as Float32Array);
+        case "audio":
+          onAudioDataRef.current?.(data as Float32Array);
           break;
-        }
+        case "error":
+          console.error("DSP worker initialization error:", data);
+          break;
       }
     };
 
@@ -65,11 +67,12 @@ export function useWasmDsp(options: WasmDspOptions): WasmDspState {
       data: {
         fftSize,
         deemphasisTcUs,
-        fftInterval: DSP_FFT_INTERVAL,
+        fftInterval: 0,
       },
     });
 
     return () => {
+      cancelled = true;
       worker.terminate();
       workerRef.current = null;
       setReady(false);

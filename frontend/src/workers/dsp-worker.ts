@@ -9,22 +9,37 @@ interface SdrProcessorLike {
 
 let processor: SdrProcessorLike | null = null;
 let fftFrameCount = 0;
-let fftInterval = 50; // compute FFT every N chunks
+let fftInterval = 0; // disabled by default; UI can enable by setting a positive interval
 
 self.onmessage = async (e: MessageEvent) => {
   const { type, data } = e.data;
 
   switch (type) {
     case "init": {
-      // Dynamic import of WASM module
-      const wasm = await import("../wasm/sdr_web_wasm_dsp");
-      await wasm.default();
-      processor = new wasm.SdrProcessor(
-        data?.fftSize ?? 2048,
-        data?.deemphasisTcUs ?? 50.0
-      );
-      fftInterval = data?.fftInterval ?? 50;
-      self.postMessage({ type: "ready" });
+      try {
+        // Dynamic import of WASM module
+        const wasm = await import("../wasm/sdr_web_wasm_dsp");
+        const wasmAssetUrl = new URL(
+          "../wasm/sdr_web_wasm_dsp_bg.wasm",
+          import.meta.url
+        ).toString();
+        const wasmUrl = wasmAssetUrl.startsWith("/")
+          ? new URL(wasmAssetUrl, self.location.origin)
+          : wasmAssetUrl;
+        await wasm.default(wasmUrl);
+        processor?.free();
+        processor = new wasm.SdrProcessor(
+          data?.fftSize ?? 2048,
+          data?.deemphasisTcUs ?? 50.0
+        );
+        fftInterval = data?.fftInterval ?? 0;
+        fftFrameCount = 0;
+        self.postMessage({ type: "ready" });
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Unknown WASM init failure";
+        self.postMessage({ type: "error", data: message });
+      }
       break;
     }
 
@@ -32,27 +47,28 @@ self.onmessage = async (e: MessageEvent) => {
       if (!processor) return;
       const iqData = new Uint8Array(data);
 
-      // FFT at reduced rate (~20 fps)
-      fftFrameCount++;
-      if (fftFrameCount >= fftInterval) {
-        const fftData = processor.compute_fft(iqData);
-        self.postMessage({ type: "fft", data: fftData });
-        fftFrameCount = 0;
+      // FFT is disabled by default. Only compute when a positive interval is set.
+      if (fftInterval > 0) {
+        fftFrameCount++;
+        if (fftFrameCount >= fftInterval) {
+          const fftData = processor.compute_fft(iqData);
+          self.postMessage({ type: "fft", data: fftData });
+          fftFrameCount = 0;
+        }
       }
 
       // Audio demodulation every chunk
       const audioData = processor.demodulate_audio(iqData);
-      // Transfer the buffer (zero-copy)
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (self.postMessage as any)(
+      self.postMessage(
         { type: "audio", data: audioData },
-        [audioData.buffer]
+        { transfer: [audioData.buffer] }
       );
       break;
     }
 
     case "set_fft_interval": {
-      fftInterval = data;
+      fftInterval = Math.max(0, Number(data) || 0);
+      fftFrameCount = 0;
       break;
     }
   }

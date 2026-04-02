@@ -7,8 +7,22 @@ interface StatusBarProps {
   readonly sampleRate: number;
   readonly audioPlaying: boolean;
   readonly bufferHealth: number;
-  readonly tunerType?: string;
+  readonly tunerType?: number;
   readonly wasmReady: boolean;
+}
+
+/** Map rtl_tcp tuner type ID to human-readable name. */
+function tunerName(id: number | undefined): string | null {
+  if (id === undefined || id === 0) return null;
+  const names: Record<number, string> = {
+    1: "E4000",
+    2: "FC0012",
+    3: "FC0013",
+    4: "FC2580",
+    5: "R820T",
+    6: "R828D",
+  };
+  return names[id] ?? `Unknown (${id})`;
 }
 
 function formatFrequencyMHz(hz: number): string {
@@ -47,6 +61,8 @@ export function StatusBar({
   tunerType,
   wasmReady,
 }: StatusBarProps) {
+  const resolvedTunerName = tunerName(tunerType);
+
   return (
     <div className="flex flex-wrap items-center gap-4 rounded bg-gray-900 px-4 py-2 text-sm lg:gap-6">
       <div className="flex items-center gap-2">
@@ -72,10 +88,10 @@ export function StatusBar({
         </span>
       </div>
 
-      {tunerType && (
+      {resolvedTunerName && (
         <div className="flex items-center gap-2">
           <span className="text-gray-500">Tuner:</span>
-          <span className="font-mono text-cyan-400">{tunerType}</span>
+          <span className="font-mono text-cyan-400">{resolvedTunerName}</span>
         </div>
       )}
 

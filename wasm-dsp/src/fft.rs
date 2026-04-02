@@ -36,6 +36,7 @@ impl FftProcessor {
     }
 
     /// Return the FFT size.
+    #[cfg(test)]
     pub fn size(&self) -> usize {
         self.size
     }

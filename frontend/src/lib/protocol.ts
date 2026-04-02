@@ -11,7 +11,31 @@ export interface StatusMessage {
   readonly sampleRate: number;
   readonly gain: number;
   readonly agcEnabled?: boolean;
-  readonly tunerType?: string;
+  readonly tunerType?: number;
+  readonly gainCount?: number;
+}
+
+/** Raw status JSON from the backend (snake_case field names). */
+interface RawStatusMessage {
+  readonly frequency?: number;
+  readonly sample_rate?: number;
+  readonly gain?: number;
+  readonly agc_enabled?: boolean;
+  readonly tuner_type?: number;
+  readonly gain_count?: number;
+}
+
+/** Map backend snake_case status to frontend camelCase StatusMessage. */
+export function parseStatusMessage(json: string): StatusMessage {
+  const raw: RawStatusMessage = JSON.parse(json);
+  return {
+    frequency: raw.frequency ?? 0,
+    sampleRate: raw.sample_rate ?? 0,
+    gain: raw.gain ?? 0,
+    agcEnabled: raw.agc_enabled,
+    tunerType: raw.tuner_type,
+    gainCount: raw.gain_count,
+  };
 }
 
 export interface ParsedFrame {
@@ -26,7 +50,7 @@ export function parseFrame(data: ArrayBuffer): ParsedFrame {
   }
   return {
     type: bytes[0],
-    payload: bytes.slice(1),
+    payload: bytes.subarray(1),
   };
 }
 

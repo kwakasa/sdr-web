@@ -75,6 +75,7 @@ impl RtlTcpClient {
     /// Read a chunk of raw IQ bytes from the server.
     ///
     /// Returns the number of bytes actually read.
+    #[cfg(test)]
     pub async fn read_iq(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.reader.read(buf).await
     }

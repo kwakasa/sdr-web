@@ -22,6 +22,7 @@ impl DeemphasisFilter {
     }
 
     /// Return the computed alpha coefficient.
+    #[cfg(test)]
     pub fn alpha(&self) -> f32 {
         self.alpha
     }

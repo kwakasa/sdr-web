@@ -14,18 +14,13 @@ import {
   DEFAULT_FREQUENCY,
   DEFAULT_SAMPLE_RATE,
   getDefaultWebSocketUrl,
-  MIN_FREQUENCY_HZ,
-  MAX_FREQUENCY_HZ,
+  clampFrequency,
 } from "@/lib/constants";
 
 const SPECTRUM_HEIGHT = 300;
 const WATERFALL_HEIGHT = 200;
 const SMALL_TUNING_STEP_HZ = 100_000;
 const LARGE_TUNING_STEP_HZ = 1_000_000;
-
-function clampFrequency(hz: number): number {
-  return Math.max(MIN_FREQUENCY_HZ, Math.min(MAX_FREQUENCY_HZ, hz));
-}
 
 function getAudioStatusText(playing: boolean, bufferHealth: number): string {
   if (!playing) return "Stopped";

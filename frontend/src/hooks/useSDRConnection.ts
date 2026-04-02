@@ -11,6 +11,7 @@ import {
   MSG_STATUS,
   parseFrame,
   encodeCommand,
+  parseStatusMessage,
   type StatusMessage,
 } from "@/lib/protocol";
 
@@ -32,8 +33,9 @@ interface SDRConnectionState {
 export function useSDRConnection(
   options?: SDRConnectionOptions
 ): SDRConnectionState {
-  const urlRef = useRef(options?.url ?? getDefaultWebSocketUrl());
-  urlRef.current = options?.url ?? getDefaultWebSocketUrl();
+  const resolvedUrl = options?.url || getDefaultWebSocketUrl();
+  const urlRef = useRef(resolvedUrl);
+  urlRef.current = resolvedUrl;
 
   const onIqDataRef = useRef(options?.onIqData);
   onIqDataRef.current = options?.onIqData;
@@ -121,8 +123,7 @@ export function useSDRConnection(
 
         if (frame.type === MSG_STATUS) {
           const json = textDecoderRef.current.decode(frame.payload);
-          const parsed = JSON.parse(json) as StatusMessage;
-          setStatus(parsed);
+          setStatus(parseStatusMessage(json));
         }
       } catch (err) {
         console.error("Failed to parse WebSocket frame:", err);
@@ -145,6 +146,16 @@ export function useSDRConnection(
       }
     };
   }, [connectWs, clearReconnectTimer]);
+
+  // Reconnect when the URL changes
+  const prevUrlRef = useRef(resolvedUrl);
+  useEffect(() => {
+    if (prevUrlRef.current !== resolvedUrl) {
+      prevUrlRef.current = resolvedUrl;
+      backoffRef.current = RECONNECT_BASE_DELAY_MS;
+      connectWs();
+    }
+  }, [resolvedUrl, connectWs]);
 
   const sendCommand = useCallback(
     (command: string, params: Record<string, unknown>) => {

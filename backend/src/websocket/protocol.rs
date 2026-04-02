@@ -6,16 +6,6 @@ pub const MSG_RAW_IQ: u8 = 0x01;
 /// Message type tag for status information (JSON).
 pub const MSG_STATUS: u8 = 0x03;
 
-/// Encode a raw IQ data frame with type tag prepended.
-///
-/// Output: [0x01, data...]
-pub fn encode_raw_iq_frame(data: &[u8]) -> Vec<u8> {
-    let mut frame = Vec::with_capacity(1 + data.len());
-    frame.push(MSG_RAW_IQ);
-    frame.extend_from_slice(data);
-    frame
-}
-
 /// Encode a status frame with type tag and JSON payload.
 ///
 /// Output: [0x03, json_bytes...]
@@ -38,21 +28,6 @@ pub struct ControlMessage {
 mod tests {
     use super::*;
     use serde_json::json;
-
-    #[test]
-    fn test_encode_raw_iq_frame() {
-        let data = vec![10, 20, 30, 40];
-        let frame = encode_raw_iq_frame(&data);
-        assert_eq!(frame[0], MSG_RAW_IQ);
-        assert_eq!(&frame[1..], &data);
-    }
-
-    #[test]
-    fn test_encode_raw_iq_frame_empty() {
-        let frame = encode_raw_iq_frame(&[]);
-        assert_eq!(frame.len(), 1);
-        assert_eq!(frame[0], MSG_RAW_IQ);
-    }
 
     #[test]
     fn test_encode_status_frame() {

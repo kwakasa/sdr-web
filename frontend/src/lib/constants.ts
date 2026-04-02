@@ -13,7 +13,11 @@ export const GAIN_STEP_DB = 1;
 
 // IQ / DSP
 export const IQ_CHUNK_SIZE = 16384;
-export const DSP_FFT_INTERVAL = 50; // compute FFT every N chunks (~20fps)
+
+/** Clamp a frequency value to the valid RTL-SDR range. */
+export function clampFrequency(hz: number): number {
+  return Math.max(MIN_FREQUENCY_HZ, Math.min(MAX_FREQUENCY_HZ, hz));
+}
 
 // Reconnection
 export const RECONNECT_BASE_DELAY_MS = 1000;

@@ -5,15 +5,9 @@ use num_complex::Complex;
 /// Input format: [I0, Q0, I1, Q1, ...] where each byte is 0-255.
 /// Conversion: (val - 127.5) / 127.5 maps 0->-1.0, 255->1.0, 128->~0.0.
 ///
-/// # Panics
-/// Panics if input length is odd (not complete IQ pairs).
+/// If input length is odd, the trailing byte is silently ignored
+/// (TCP can fragment IQ streams at arbitrary boundaries).
 pub fn u8_iq_to_complex(input: &[u8]) -> Vec<Complex<f32>> {
-    assert!(
-        input.len() % 2 == 0,
-        "input length must be even (complete IQ pairs), got {}",
-        input.len()
-    );
-
     input
         .chunks_exact(2)
         .map(|pair| {
@@ -94,8 +88,11 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "input length must be even")]
-    fn test_odd_length_panics() {
-        u8_iq_to_complex(&[0, 128, 255]);
+    fn test_odd_length_truncates() {
+        // Trailing byte should be silently dropped
+        let result = u8_iq_to_complex(&[0, 255, 128]);
+        assert_eq!(result.len(), 1);
+        assert!(approx_eq(result[0].re, -1.0));
+        assert!(approx_eq(result[0].im, 1.0));
     }
 }

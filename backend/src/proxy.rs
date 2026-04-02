@@ -86,7 +86,7 @@ async fn iq_reader_task(
                     let rate_kbps = (bytes_total as f64 * 8.0) / (elapsed.as_secs_f64() * 1000.0);
                     debug!(
                         bytes = bytes_total,
-                        rate_kbps = format!("{:.0}", rate_kbps),
+                        rate_kbps = rate_kbps as u64,
                         "IQ throughput"
                     );
                     bytes_total = 0;

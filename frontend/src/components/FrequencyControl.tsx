@@ -1,15 +1,11 @@
 "use client";
 
 import { useCallback, useState } from "react";
-import { MIN_FREQUENCY_HZ, MAX_FREQUENCY_HZ } from "@/lib/constants";
+import { clampFrequency } from "@/lib/constants";
 
 interface FrequencyControlProps {
   readonly frequency: number;
   readonly onFrequencyChange: (freqHz: number) => void;
-}
-
-function clampFrequency(hz: number): number {
-  return Math.max(MIN_FREQUENCY_HZ, Math.min(MAX_FREQUENCY_HZ, hz));
 }
 
 export function FrequencyControl({
